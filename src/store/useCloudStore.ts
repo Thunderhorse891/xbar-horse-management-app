@@ -7,7 +7,7 @@ import type { UserRole } from '@/types/xbar';
 import { authCallbackOrigin, isNativeApp } from '../lib/nativePlatform.js';
 import { describeAuthError } from '@/lib/authErrors';
 import { bootstrapEventDisposition, createLatestWriteGate } from '@/lib/authBootstrap';
-import { hasValidatedPasswordRecovery } from '@/lib/passwordRecovery';
+import { hasValidatedPasswordRecovery, reconcileStoredRecovery } from '@/lib/passwordRecovery';
 
 export { hasValidatedPasswordRecovery };
 import { authRedirectUrl, passwordResetPath, publicAppRouteUrl } from '@/lib/routeCanon';
@@ -167,6 +167,33 @@ function currentAuthRedirectUrl() {
  */
 const RECOVERY_USER_KEY = 'xbar-password-recovery-for';
 
+/*
+ * The tab-local grant is durable across a reload, so its revocation has to be
+ * too. USER_UPDATED is a transient broadcast: a tab that was reloading while
+ * another tab finished the reset never hears it. localStorage rather than
+ * sessionStorage precisely because it must outlive the tab and be visible to
+ * every one of them. What is stored is a user id, never a token.
+ */
+const RECOVERY_SPENT_KEY = 'xbar-password-recovery-spent';
+
+function readSpentRecoveryUser(): string {
+  try {
+    return typeof localStorage === 'undefined' ? '' : (localStorage.getItem(RECOVERY_SPENT_KEY) ?? '');
+  } catch {
+    return '';
+  }
+}
+
+function storeSpentRecoveryUser(userId: string) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (userId) localStorage.setItem(RECOVERY_SPENT_KEY, userId);
+    else localStorage.removeItem(RECOVERY_SPENT_KEY);
+  } catch {
+    // Non-fatal; the transient event still clears live tabs.
+  }
+}
+
 function readStoredRecoveryUser(): string {
   try {
     return typeof sessionStorage === 'undefined' ? '' : (sessionStorage.getItem(RECOVERY_USER_KEY) ?? '');
@@ -189,7 +216,10 @@ function storeRecoveryUser(userId: string) {
 
 export const useCloudStore = create<CloudStore>((set, get) => ({
   initialized: false,
-  passwordRecoveryFor: readStoredRecoveryUser(),
+  passwordRecoveryFor: reconcileStoredRecovery({
+    storedGrant: readStoredRecoveryUser(),
+    spentFor: readSpentRecoveryUser(),
+  }),
   status: isSupabaseConfigured() ? 'loading' : 'unavailable',
   session: null,
   workspaceId: '',
@@ -220,10 +250,10 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
      * without this the winner is whichever FINISHES last, and a sign-out gets
      * quietly undone by the sign-in it replaced. See lib/authBootstrap.ts.
      */
-    const beginSync = createLatestWriteGate();
+    const syncGate = createLatestWriteGate();
 
     const syncSessionState = async (session: Session | null, initialized = false) => {
-      const isStillLatest = beginSync();
+      const isStillLatest = syncGate.begin();
 
       if (!session) {
         set({
@@ -288,6 +318,9 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
         // Supabase has validated the link; record WHO it was validated for.
         set({ passwordRecoveryFor: session.user.id });
         storeRecoveryUser(session.user.id);
+        // Supabase has just validated a NEW link, so an earlier completion no
+        // longer says anything about this one.
+        storeSpentRecoveryUser('');
       }
       if (event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
         /*
@@ -307,6 +340,11 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
          */
         set({ passwordRecoveryFor: '' });
         storeRecoveryUser('');
+        if (event === 'USER_UPDATED' && session) {
+          // Durably, so a tab that was reloading through this broadcast does
+          // not come back holding the grant it just missed the end of.
+          storeSpentRecoveryUser(session.user.id);
+        }
       }
       /*
        * The explicit getSession() below owns the first sync, so an event that
@@ -319,6 +357,14 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
       if (disposition === 'queue') {
         // Last one wins: it is the most recent thing Supabase has said.
         queuedDuringBootstrap = { session };
+        /*
+         * And the bootstrap sync still in flight is now writing about a session
+         * that has been superseded. Retiring it here rather than when the
+         * replay starts matters: otherwise it commits the obsolete session and
+         * workspace first, and reconciliation can begin against the wrong
+         * account in the gap before the replay lands.
+         */
+        syncGate.retireInFlight();
         return;
       }
       void syncSessionState(session);
@@ -354,6 +400,18 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
     const queued = takeQueuedEvent();
     if (queued) {
       await syncSessionState(queued.session);
+    }
+
+    /*
+     * Re-read the durable revocation once startup has settled. A tab that was
+     * reloading while another finished the reset can read its grant before the
+     * other tab records the completion, and it is past the point where the
+     * transient broadcast could have reached it.
+     */
+    const spentFor = readSpentRecoveryUser();
+    if (spentFor && get().passwordRecoveryFor === spentFor) {
+      set({ passwordRecoveryFor: '' });
+      storeRecoveryUser('');
     }
 
     return () => subscription.subscription.unsubscribe();
@@ -622,6 +680,9 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
     // screen while the password was still the old one.
     set({ passwordRecoveryFor: '' });
     storeRecoveryUser('');
+    // Recorded here as well as on USER_UPDATED: this is the tab that knows the
+    // update succeeded, and it must not depend on hearing its own broadcast.
+    if (outcome.data.user) storeSpentRecoveryUser(outcome.data.user.id);
     return { ok: true, message: 'Password updated. You are signed in.' };
   },
   sendPasswordReset: async (email) => {

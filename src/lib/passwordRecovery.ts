@@ -16,6 +16,27 @@ export type RecoveryGateState = {
   passwordRecoveryFor: string;
 };
 
+/**
+ * The grant a tab may still hold at startup, after accounting for one already
+ * spent elsewhere.
+ *
+ * The grant is deliberately durable -- it survives a reload so a refresh does
+ * not report a valid link as expired -- but the only thing that used to clear
+ * it was USER_UPDATED, which is a transient broadcast. A tab that was reloading
+ * or navigating while another tab completed the reset had no subscriber to
+ * receive it, came back, read its still-present grant and a session for the
+ * same user, and could set the password again with no new link. A durable
+ * grant needs a durable revocation.
+ *
+ * A later, genuine recovery for the same account clears the spent mark when
+ * Supabase validates it, so this only ever retires a grant that has actually
+ * been used.
+ */
+export function reconcileStoredRecovery(input: { storedGrant: string; spentFor: string }): string {
+  if (!input.storedGrant) return '';
+  return input.storedGrant === input.spentFor ? '' : input.storedGrant;
+}
+
 export function hasValidatedPasswordRecovery(state: RecoveryGateState): boolean {
   const grantedTo = state.passwordRecoveryFor;
   if (!grantedTo) return false;

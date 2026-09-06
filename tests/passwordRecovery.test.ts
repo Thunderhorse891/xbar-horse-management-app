@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { hasValidatedPasswordRecovery, resetScreenState } from '../src/lib/passwordRecovery.js';
+import {
+  hasValidatedPasswordRecovery,
+  reconcileStoredRecovery,
+  resetScreenState,
+} from '../src/lib/passwordRecovery.js';
 
 /*
  * Holding a session is not the same fact as holding a validated recovery, and
@@ -108,4 +112,29 @@ test('every combination resolves to exactly one state', () => {
     ['done', 'form', 'refused', 'saving', 'settling', 'unavailable'],
     'every declared state must be reachable, or one of them is dead code',
   );
+});
+
+test('a grant already spent elsewhere does not come back after a reload', () => {
+  /*
+   * The grant is durable on purpose -- a refresh must not report a valid link
+   * as expired -- but the only thing clearing it was USER_UPDATED, a transient
+   * broadcast. A tab reloading while another tab completed the reset had no
+   * subscriber to hear it, came back holding the grant and a session for the
+   * same user, and could set the password again with no new link.
+   */
+  assert.equal(reconcileStoredRecovery({ storedGrant: 'user-a', spentFor: 'user-a' }), '');
+});
+
+test('a grant survives a completion recorded for a different account', () => {
+  assert.equal(reconcileStoredRecovery({ storedGrant: 'user-a', spentFor: 'user-b' }), 'user-a');
+});
+
+test('a grant survives when nothing has been spent', () => {
+  // The ordinary reload, which must still find its link valid.
+  assert.equal(reconcileStoredRecovery({ storedGrant: 'user-a', spentFor: '' }), 'user-a');
+});
+
+test('no grant stays no grant', () => {
+  assert.equal(reconcileStoredRecovery({ storedGrant: '', spentFor: '' }), '');
+  assert.equal(reconcileStoredRecovery({ storedGrant: '', spentFor: 'user-a' }), '');
 });

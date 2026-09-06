@@ -49,12 +49,32 @@ export function bootstrapEventDisposition(input: BootstrapEventInput): Bootstrap
  * a ticket on the way in and checks it on the way out; a write that has been
  * overtaken drops itself instead of committing stale state.
  */
-export function createLatestWriteGate() {
+export type LatestWriteGate = {
+  /** Start a write; the returned check says whether it may still commit. */
+  begin: () => () => boolean;
+  /**
+   * Retire every write currently in flight WITHOUT starting one.
+   *
+   * Needed the moment a newer event is merely queued rather than applied: the
+   * bootstrap sync is still loading a workspace for a session that has already
+   * been superseded, and without this it commits that obsolete session and
+   * workspace before the replay even starts -- long enough for reconciliation
+   * to begin against the wrong account.
+   */
+  retireInFlight: () => void;
+};
+
+export function createLatestWriteGate(): LatestWriteGate {
   let issued = 0;
-  return function begin() {
-    const ticket = ++issued;
-    return function isStillLatest() {
-      return ticket === issued;
-    };
+  return {
+    begin() {
+      const ticket = ++issued;
+      return function isStillLatest() {
+        return ticket === issued;
+      };
+    },
+    retireInFlight() {
+      issued += 1;
+    },
   };
 }

@@ -61,8 +61,8 @@ test('an ordinary URL is not a recovery callback', () => {
 });
 
 test('a single write commits', () => {
-  const begin = createLatestWriteGate();
-  const isStillLatest = begin();
+  const gate = createLatestWriteGate();
+  const isStillLatest = gate.begin();
   assert.equal(isStillLatest(), true);
 });
 
@@ -74,26 +74,26 @@ test('a write that has been overtaken must not commit', () => {
    * sign-in it replaced finished afterwards and put the old session and
    * workspace back -- with no further event coming to correct it.
    */
-  const begin = createLatestWriteGate();
-  const older = begin();
-  const newer = begin();
+  const gate = createLatestWriteGate();
+  const older = gate.begin();
+  const newer = gate.begin();
   assert.equal(older(), false, 'the overtaken write must drop itself');
   assert.equal(newer(), true, 'the newest write owns the state');
 });
 
 test('only the newest of several writes survives', () => {
-  const begin = createLatestWriteGate();
-  const first = begin();
-  const second = begin();
-  const third = begin();
+  const gate = createLatestWriteGate();
+  const first = gate.begin();
+  const second = gate.begin();
+  const third = gate.begin();
   assert.deepEqual([first(), second(), third()], [false, false, true]);
 });
 
 test('the newest write stays valid however long it takes', () => {
   // It is not a timeout: a slow write still commits, as long as nothing newer
   // has started. Expiring on duration would drop legitimate slow syncs.
-  const begin = createLatestWriteGate();
-  const only = begin();
+  const gate = createLatestWriteGate();
+  const only = gate.begin();
   assert.equal(only(), true);
   assert.equal(only(), true);
 });
@@ -101,9 +101,27 @@ test('the newest write stays valid however long it takes', () => {
 test('gates are independent of one another', () => {
   // One gate per store initialization, so a second one must not retire the
   // first one's in-flight write.
-  const beginA = createLatestWriteGate();
-  const beginB = createLatestWriteGate();
-  const a = beginA();
-  beginB();
+  const gateA = createLatestWriteGate();
+  const gateB = createLatestWriteGate();
+  const a = gateA.begin();
+  gateB.begin();
   assert.equal(a(), true);
+});
+
+test('retiring in flight writes stops them committing, and starts nothing', () => {
+  /*
+   * Queueing an event during bootstrap does not start a sync -- the replay
+   * comes later -- but the bootstrap sync in flight is already writing about a
+   * session that has been superseded. Without this it commits the obsolete
+   * session and workspace first, and reconciliation can begin against the
+   * wrong account in the gap before the replay lands.
+   */
+  const gate = createLatestWriteGate();
+  const inFlight = gate.begin();
+  gate.retireInFlight();
+  assert.equal(inFlight(), false, 'the superseded write must not commit');
+
+  // And no write was started, so the next one to begin is still the latest.
+  const replay = gate.begin();
+  assert.equal(replay(), true);
 });

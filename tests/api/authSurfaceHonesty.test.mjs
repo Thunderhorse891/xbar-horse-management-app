@@ -347,6 +347,48 @@ test('a stale session sync cannot commit over a newer one', () => {
   );
 });
 
+test('a durable grant has a durable revocation', () => {
+  /*
+   * The grant survives a reload on purpose. Its only clearer was USER_UPDATED,
+   * which is a transient broadcast -- a tab reloading while another completed
+   * the reset never heard it and came back able to reuse a spent grant.
+   */
+  assert.match(store, /RECOVERY_SPENT_KEY/, 'a completed recovery has to be recorded where a reload can see it');
+  assert.match(
+    store,
+    /reconcileStoredRecovery\(\{/,
+    'startup must reconcile the stored grant against a recorded completion',
+  );
+  assert.match(
+    store,
+    /event === 'USER_UPDATED' && session/,
+    'the completion is what marks the grant spent, not a sign-out',
+  );
+  // A later genuine link must clear the mark, or one reset would bar every
+  // future one for that account.
+  const initialize = body(store, /initialize: async[\s\S]*?\n {2}\},/, 'initialize');
+  assert.match(
+    initialize,
+    /event === 'PASSWORD_RECOVERY'[\s\S]*?storeSpentRecoveryUser\(''\)/,
+    'a newly validated link must supersede an earlier completion',
+  );
+});
+
+test('queueing a newer event retires the bootstrap sync in flight', () => {
+  /*
+   * Queueing does not start a sync, so without this the bootstrap sync keeps
+   * its ticket and commits the obsolete session and workspace before the
+   * replay begins -- long enough for reconciliation to start on the wrong
+   * account.
+   */
+  const initialize = body(store, /initialize: async[\s\S]*?\n {2}\},/, 'initialize');
+  assert.match(
+    initialize,
+    /queuedDuringBootstrap = \{ session \};[\s\S]{0,80}syncGate\.retireInFlight\(\);/,
+    'the in-flight bootstrap sync must be retired as the event is queued',
+  );
+});
+
 test('a recovery grant is released when its session ends', () => {
   /*
    * The explicit signOut action only clears the tab that ran it. A token
