@@ -28,20 +28,40 @@ const env = {
   VITE_RUNTIME_MONITORING_ENABLED: 'false',
   VITE_SUPABASE_URL: `http://127.0.0.1:${AUTH_SMOKE_PORT}`,
   VITE_SUPABASE_ANON_KEY: 'auth-smoke-anon-key',
-  // Left off on purpose. With relational sync enabled the store loads a
-  // workspace profile over the network on every session change, which these
-  // tests neither stub nor care about.
-  VITE_RELATIONAL_SYNC_ENABLED: '',
-  // No local-mode escape hatch: the point is the Supabase-backed path.
-  VITE_ALLOW_LOCAL_MODE: '',
+  /*
+   * Off explicitly, and by the name the app actually reads.
+   *
+   * With relational sync on, the store loads a workspace profile over the
+   * network on every session change -- requests these tests neither stub nor
+   * care about. An earlier revision here set VITE_RELATIONAL_SYNC_ENABLED,
+   * which nothing reads (src/lib/platformConfig.ts reads
+   * VITE_SUPABASE_RELATIONAL_SYNC, falling back to the former
+   * VITE_SUPABASE_RELATIONAL_MIRROR), and an empty string would not have
+   * disabled it anyway: readFlag treats empty as "unset" and this flag
+   * DEFAULTS TO TRUE. So that build had relational sync enabled -- the opposite
+   * of what its comment claimed.
+   */
+  VITE_SUPABASE_RELATIONAL_SYNC: 'false',
+  // No local-mode escape hatch: the point is the Supabase-backed path. Spelled
+  // 'false' rather than '' for the same reason -- empty means "use the
+  // default", not "off".
+  VITE_ALLOW_LOCAL_MODE: 'false',
   // Providers are covered by tests/authProviders.test.ts and the store suite;
   // pinning it empty keeps the sign-in screen deterministic here.
   VITE_AUTH_OAUTH_PROVIDERS: '',
+  /*
+   * Pinned, not inherited. `env` starts from process.env, so a VITE_NATIVE_APP
+   * or XBAR_SKIP_MARKETING left over in the shell -- from a mobile build, say --
+   * would quietly turn this into a native bundle, or skip the post-build that
+   * produces dist/app.html and leave every /app route 404ing. Neither failure
+   * announces itself as a wrong build target.
+   */
+  VITE_NATIVE_APP: 'false',
+  XBAR_SKIP_MARKETING: '',
 };
 
-// XBAR_SKIP_MARKETING is deliberately NOT set: the post-build is what splits
-// the SPA shell out to dist/app.html, and scripts/serve-dist.mjs serves /app/*
-// from that file. Skipping it leaves no app.html and every route 404s.
+// The post-build (not skipped, see above) is what splits the SPA shell out to
+// dist/app.html, which scripts/serve-dist.mjs serves /app/* from.
 
 console.log('[auth-smoke] building web bundle (supabase configured)');
 

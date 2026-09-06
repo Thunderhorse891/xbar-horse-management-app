@@ -531,10 +531,38 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
       return { ok: false, message: 'Use at least 8 characters for the password.' };
     }
 
-    const { error } = await client.auth.updateUser({ password });
+    /*
+     * updateUser can REJECT, not just return an error, and this function
+     * promising to resolve is load-bearing: ResetPassword only clears its busy
+     * flag after awaiting it, so a rejection left the screen disabled on
+     * "Saving..." for good -- no success, no error, no retry. Nothing told the
+     * customer whether their password had changed.
+     *
+     * It is reachable without anything exotic. auth-js guards this call with a
+     * cross-tab Web Lock and hands the lock over after five seconds, so a
+     * second tab submitting during a slow request steals it and throws
+     * "Lock ... was released because another request stole it" here. auth-js
+     * returns its own AuthErrors but rethrows anything else, and that is
+     * anything else.
+     */
+    let outcome: Awaited<ReturnType<typeof client.auth.updateUser>>;
+    try {
+      outcome = await client.auth.updateUser({ password });
+    } catch {
+      /*
+       * The request was abandoned in flight, so whether the server applied it
+       * is genuinely unknown here -- and saying either "done" or "failed" would
+       * be a guess. The grant is deliberately left in place: this is not a
+       * finished recovery, and the customer may simply try again.
+       */
+      return {
+        ok: false,
+        message: 'We could not confirm that change. Try the new password; if it does not work, request another link.',
+      };
+    }
 
-    if (error) {
-      return { ok: false, message: describeAuthError(error.message) };
+    if (outcome.error) {
+      return { ok: false, message: describeAuthError(outcome.error.message) };
     }
 
     // Only now is the recovery finished; clearing it earlier would release the

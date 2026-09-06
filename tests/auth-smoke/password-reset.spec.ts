@@ -35,6 +35,11 @@ import { expect, test, type Page, type Route } from '@playwright/test';
  *       -> "a rejected update stays retryable and keeps the grant"
  *   releasing the grant on SIGNED_OUT only, not USER_UPDATED
  *       -> "spending the grant in one tab ends it in the other"
+ *   letting a rejected updateUser go unhandled in the store
+ *       -> "a submission cut short by another tab is told so ..."
+ *   removing the `saving` precedence from resetScreenState
+ *       -> "a completed reset reports success and does not also claim ..."
+ *          (NOT the cut-short case -- see the note on it)
  */
 
 const USER_ID = '5d2b6f10-7c4a-4a1e-9a3f-000000000001';
@@ -155,7 +160,7 @@ const newPassword = (page: Page) => page.getByLabel('New password', { exact: tru
 const confirmPassword = (page: Page) => page.getByLabel('Confirm new password');
 const submit = (page: Page) => page.getByRole('button', { name: 'Set new password' });
 
-type ScreenSnapshot = { success: boolean; refused: boolean; form: boolean; saving: boolean };
+type ScreenSnapshot = { success: boolean; refused: boolean; form: boolean; saving: boolean; unconfirmed: boolean };
 
 /*
  * Records every distinct state the screen passes through, rather than what it
@@ -176,12 +181,17 @@ async function watchScreen(page: Page) {
   await page.evaluate(() => {
     const seen: string[] = [];
     const snap = () => {
-      const text = document.body.innerText;
+      // Lower-cased because innerText is the RENDERED text: the field labels
+      // and the submit button are upper-cased in CSS, so matching them as
+      // written in the JSX quietly never matched and left `form` and `saving`
+      // permanently false -- flags that look like coverage and assert nothing.
+      const text = document.body.innerText.toLowerCase();
       const state = JSON.stringify({
-        success: text.includes('Password updated. You are signed in.'),
+        success: text.includes('password updated. you are signed in.'),
         refused: text.includes('needs a current password-reset link'),
-        form: text.includes('Confirm new password'),
-        saving: text.includes('Saving...'),
+        form: text.includes('confirm new password'),
+        saving: text.includes('saving...'),
+        unconfirmed: text.includes('could not confirm that change'),
       });
       if (seen[seen.length - 1] !== state) seen.push(state);
     };
@@ -355,4 +365,85 @@ test('spending the grant in one tab ends it in the other', async ({ context }) =
   await expect(refusal(second)).toBeVisible({ timeout: 15_000 });
   await expect(newPassword(second)).toHaveCount(0);
   expect(await heldGrant(second)).toBe('');
+});
+
+test('a submission cut short by another tab is told so, not left on Saving', async ({ context }) => {
+  /*
+   * Two tabs submitting at once, which auth-js resolves by force: it guards
+   * updateUser with a cross-tab Web Lock, and the waiting tab STEALS the lock
+   * five seconds in. Stealing it makes the first tab's updateUser REJECT rather
+   * than return an error -- and ResetPassword only clears its busy flag after
+   * that promise settles, so tab A sat disabled on "Saving..." indefinitely,
+   * never told whether its password had changed. updatePassword now honours its
+   * contract to resolve.
+   *
+   * What this case does NOT cover, despite being written to: the grant clearing
+   * while this tab's own request is in flight. That scenario is unreachable
+   * across tabs, and the lock is why -- tab B can only broadcast USER_UPDATED
+   * after it takes the lock, and taking the lock is what kills tab A's request,
+   * so tab A has already left `saving` by the time the grant goes. Confirmed by
+   * mutation: with `saving` precedence removed this test still passes, and the
+   * completed-reset case above is what fails. The real window for that
+   * precedence is single-tab and sub-millisecond -- auth-js emits USER_UPDATED
+   * before updateUser resolves -- which is exactly what that case records.
+   */
+  const first = await context.newPage();
+  const second = await context.newPage();
+
+  let releaseFirst: () => void = () => {};
+  const firstUpdateHeld = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  await stubGoTrueUser(first, async (route) => {
+    await firstUpdateHeld;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(userRecord()) });
+  });
+  await stubGoTrueUser(second);
+
+  await first.goto(recoveryLink());
+  await expect(newPassword(first)).toBeVisible({ timeout: 30_000 });
+  await second.goto(recoveryLink());
+  await expect(newPassword(second)).toBeVisible({ timeout: 30_000 });
+
+  await fillNewPassword(first, 'a-brand-new-password');
+  await fillNewPassword(second, 'a-different-new-password');
+
+  await watchScreen(first);
+  await submit(first).click();
+  await expect(first.getByRole('button', { name: 'Saving...' })).toBeVisible();
+
+  // Waits out the Web Lock, then completes and broadcasts USER_UPDATED.
+  await submit(second).click();
+  await expect(second.getByText('Password updated. You are signed in.').first()).toBeVisible({ timeout: 30_000 });
+
+  // The grant is now spent, and tab A is still mid-submission. This is the
+  // window: "no valid recovery" is true, and it must not surface as an
+  // expired-link refusal to someone who is still waiting on their own request.
+  expect(await heldGrant(first)).toBe('');
+
+  /*
+   * And tab A has to reach an outcome. Whether the server applied its
+   * abandoned request is unknowable from here, so the honest answer is that it
+   * could not be confirmed -- not silence, and not a claim either way.
+   */
+  await expect(first.getByText(/could not confirm that change/).first()).toBeVisible({ timeout: 30_000 });
+
+  /*
+   * Tab A ends on the refusal, and that is correct rather than the bug this
+   * file guards against: the other tab really did spend the grant, so there is
+   * nothing left for tab A to retry and requesting a new link is the only way
+   * on. What must not happen is arriving there EARLY -- while tab A is still
+   * waiting on its own request, when nobody has told it anything yet.
+   */
+  await expect(first.getByRole('button', { name: 'Back to sign in' })).toBeVisible();
+
+  const screens = await observedScreens(first);
+  expect(screens.some((state) => state.saving)).toBe(true);
+  const firstRefusal = screens.findIndex((state) => state.refused);
+  const firstOutcome = screens.findIndex((state) => state.unconfirmed);
+  expect(firstOutcome).toBeGreaterThanOrEqual(0);
+  expect(firstRefusal === -1 || firstRefusal >= firstOutcome).toBe(true);
+
+  releaseFirst();
 });
