@@ -58,6 +58,13 @@ export default function Login() {
   // nothing".
   const oauthProviders = useMemo(() => presentableOAuthProviders(), []);
 
+  /*
+   * Also the way OUT of the confirmation state, in both directions: clearing
+   * `confirmationEmail` is what puts the form back. Re-selecting the mode
+   * already in effect is therefore meaningful rather than a no-op -- it is how
+   * "use a different address" returns to signup with the address still there
+   * to correct.
+   */
   const setMode = (mode: AuthMode) => {
     // A message about the previous mode is worse than no message: "Confirm
     // your email" left standing over a sign-in form reads as an instruction.
@@ -165,6 +172,11 @@ export default function Login() {
     );
     if (result.ok && result.outcome !== 'signed-in') {
       setConfirmationEmail(email.trim());
+      // The credential does not belong on a screen that is now about an inbox.
+      // It was accepted, the next step is in the customer's email, and leaving
+      // it in a field means it is still sitting there behind whatever the
+      // browser does with an unsubmitted form.
+      setPassword('');
     }
     setBusy('');
   };
@@ -334,6 +346,9 @@ export default function Login() {
               <div className="clean-auth-callout__actions">
                 <button type="button" disabled={busy !== ''} onClick={() => void resendConfirmation()}>
                   {busy === 'resend' ? 'Sending...' : 'Send it again'}
+                </button>
+                <button type="button" disabled={busy !== ''} onClick={() => setMode('signup')}>
+                  Use a different address
                 </button>
                 <button type="button" disabled={busy !== ''} onClick={() => setMode('signin')}>
                   Back to sign in

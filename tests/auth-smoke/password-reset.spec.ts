@@ -72,8 +72,14 @@ type ScreenSnapshot = { success: boolean; refused: boolean; form: boolean; savin
  * contradiction has to be forbidden at every instant, not merely absent at
  * some instant.
  *
- * A MutationObserver catches the renders; the interval covers the case where
- * two renders land in one task and the observer only sees the settled DOM.
+ * A MutationObserver is the whole mechanism. This also ran a 10ms interval,
+ * on the stated grounds that it caught renders the observer missed -- which it
+ * cannot: two renders in one task leave the DOM at its final state, and a
+ * sampler reads the same settled DOM the observer does. So it bought nothing
+ * and cost a forced layout a hundred times a second, for the life of the page,
+ * including after the success screen hands off to the workspace. That is a
+ * plausible source of the 60s timeout seen on a slower machine, and it was
+ * removed rather than left in as insurance against a case it never covered.
  */
 async function watchScreen(page: Page) {
   await page.evaluate(() => {
@@ -96,13 +102,30 @@ async function watchScreen(page: Page) {
     (window as unknown as { __screenStates: string[] }).__screenStates = seen;
     snap();
     new MutationObserver(snap).observe(document.body, { subtree: true, childList: true, characterData: true });
-    window.setInterval(snap, 10);
   });
 }
 
 async function observedScreens(page: Page): Promise<ScreenSnapshot[]> {
-  const raw = await page.evaluate(() => (window as unknown as { __screenStates: string[] }).__screenStates);
+  const raw = await page.evaluate(() => (window as unknown as { __screenStates?: string[] }).__screenStates);
+  if (!raw) {
+    // The recorder lives on `window`, so a navigation takes it with it. The
+    // success screen hands off to the workspace after a couple of seconds, and
+    // reading the states after that would otherwise fail as an opaque
+    // TypeError on undefined rather than naming what happened.
+    throw new Error('Screen recorder is gone: the page navigated before the recorded states were read.');
+  }
   return raw.map((entry) => JSON.parse(entry) as ScreenSnapshot);
+}
+
+/*
+ * Fails the test on an uncaught page error instead of letting it surface as a
+ * puzzling timeout somewhere later. A remounted or crashed screen is exactly
+ * the kind of thing that otherwise reads as "the button never said Saving".
+ */
+function recordPageErrors(page: Page) {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`${error.name}: ${error.message}`));
+  return errors;
 }
 
 async function heldGrant(page: Page) {
@@ -287,61 +310,92 @@ test('a submission cut short by another tab is told so, not left on Saving', asy
    */
   const first = await context.newPage();
   const second = await context.newPage();
+  const firstErrors = recordPageErrors(first);
 
   let releaseFirst: () => void = () => {};
   const firstUpdateHeld = new Promise<void>((resolve) => {
     releaseFirst = resolve;
   });
-
-  await stubGoTrueUser(first, async (route) => {
-    await firstUpdateHeld;
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(userRecord()) });
+  /*
+   * Resolved by the route handler itself, so "tab A is mid-submission" is
+   * established by the request HAVING ARRIVED rather than by the button
+   * happening to read "Saving..." when an assertion looked. Reported flaky
+   * exactly there on a slower machine, and a button label is the weakest
+   * possible evidence for it.
+   */
+  let sawFirstUpdate: () => void = () => {};
+  const firstUpdateStarted = new Promise<void>((resolve) => {
+    sawFirstUpdate = resolve;
   });
-  await stubGoTrueUser(second);
 
-  await first.goto(recoveryLink());
-  await expect(newPassword(first)).toBeVisible({ timeout: 30_000 });
-  await second.goto(recoveryLink());
-  await expect(newPassword(second)).toBeVisible({ timeout: 30_000 });
+  try {
+    await stubGoTrueUser(first, async (route) => {
+      sawFirstUpdate();
+      await firstUpdateHeld;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(userRecord()) });
+    });
+    await stubGoTrueUser(second);
 
-  await fillNewPassword(first, 'a-brand-new-password');
-  await fillNewPassword(second, 'a-different-new-password');
+    await first.goto(recoveryLink());
+    await expect(newPassword(first)).toBeVisible({ timeout: 30_000 });
+    await second.goto(recoveryLink());
+    await expect(newPassword(second)).toBeVisible({ timeout: 30_000 });
 
-  await watchScreen(first);
-  await submit(first).click();
-  await expect(first.getByRole('button', { name: 'Saving...' })).toBeVisible();
+    await fillNewPassword(first, 'a-brand-new-password');
+    await fillNewPassword(second, 'a-different-new-password');
 
-  // Waits out the Web Lock, then completes and broadcasts USER_UPDATED.
-  await submit(second).click();
-  await expect(second.getByText('Password updated. You are signed in.').first()).toBeVisible({ timeout: 30_000 });
+    /*
+     * The reported failure snapshot showed this form with EMPTY fields, which
+     * is a remount rather than a slow render -- and an empty form cannot
+     * submit, so it surfaced as "the button never said Saving". Asserted here
+     * so that if it happens again it fails saying what actually went wrong,
+     * at the point it went wrong.
+     */
+    await expect(newPassword(first)).toHaveValue('a-brand-new-password');
+    await expect(confirmPassword(first)).toHaveValue('a-brand-new-password');
 
-  // The grant is now spent, and tab A is still mid-submission. This is the
-  // window: "no valid recovery" is true, and it must not surface as an
-  // expired-link refusal to someone who is still waiting on their own request.
-  expect(await heldGrant(first)).toBe('');
+    await watchScreen(first);
+    await submit(first).click();
+    await firstUpdateStarted;
+    await expect(first.getByRole('button', { name: 'Saving...' })).toBeVisible();
 
-  /*
-   * And tab A has to reach an outcome. Whether the server applied its
-   * abandoned request is unknowable from here, so the honest answer is that it
-   * could not be confirmed -- not silence, and not a claim either way.
-   */
-  await expect(first.getByText(/could not confirm that change/).first()).toBeVisible({ timeout: 30_000 });
+    // Waits out the Web Lock, then completes and broadcasts USER_UPDATED.
+    await submit(second).click();
+    await expect(second.getByText('Password updated. You are signed in.').first()).toBeVisible({ timeout: 30_000 });
 
-  /*
-   * Tab A ends on the refusal, and that is correct rather than the bug this
-   * file guards against: the other tab really did spend the grant, so there is
-   * nothing left for tab A to retry and requesting a new link is the only way
-   * on. What must not happen is arriving there EARLY -- while tab A is still
-   * waiting on its own request, when nobody has told it anything yet.
-   */
-  await expect(first.getByRole('button', { name: 'Back to sign in' })).toBeVisible();
+    // The grant is now spent, and tab A is still mid-submission. This is the
+    // window: "no valid recovery" is true, and it must not surface as an
+    // expired-link refusal to someone who is still waiting on their own request.
+    expect(await heldGrant(first)).toBe('');
 
-  const screens = await observedScreens(first);
-  expect(screens.some((state) => state.saving)).toBe(true);
-  const firstRefusal = screens.findIndex((state) => state.refused);
-  const firstOutcome = screens.findIndex((state) => state.unconfirmed);
-  expect(firstOutcome).toBeGreaterThanOrEqual(0);
-  expect(firstRefusal === -1 || firstRefusal >= firstOutcome).toBe(true);
+    /*
+     * And tab A has to reach an outcome. Whether the server applied its
+     * abandoned request is unknowable from here, so the honest answer is that it
+     * could not be confirmed -- not silence, and not a claim either way.
+     */
+    await expect(first.getByText(/could not confirm that change/).first()).toBeVisible({ timeout: 30_000 });
 
-  releaseFirst();
+    /*
+     * Tab A ends on the refusal, and that is correct rather than the bug this
+     * file guards against: the other tab really did spend the grant, so there is
+     * nothing left for tab A to retry and requesting a new link is the only way
+     * on. What must not happen is arriving there EARLY -- while tab A is still
+     * waiting on its own request, when nobody has told it anything yet.
+     */
+    await expect(first.getByRole('button', { name: 'Back to sign in' })).toBeVisible();
+
+    const screens = await observedScreens(first);
+    expect(screens.some((state) => state.saving)).toBe(true);
+    const firstRefusal = screens.findIndex((state) => state.refused);
+    const firstOutcome = screens.findIndex((state) => state.unconfirmed);
+    expect(firstOutcome).toBeGreaterThanOrEqual(0);
+    expect(firstRefusal === -1 || firstRefusal >= firstOutcome).toBe(true);
+
+    expect(firstErrors).toEqual([]);
+  } finally {
+    // In a finally because a held route outlives a failed assertion: Playwright
+    // waits on it during teardown, turning one clear failure into a timeout
+    // here and a slow, confusing retry after it.
+    releaseFirst();
+  }
 });

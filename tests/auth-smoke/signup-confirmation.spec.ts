@@ -94,3 +94,52 @@ test('after signup the screen waits on the inbox instead of offering signup agai
   // Still the confirmation state, not bounced back to a form by the failure.
   await expect(page.getByRole('button', { name: 'Create Account' })).toHaveCount(0);
 });
+
+test('the confirmation state hands back a way to correct the address', async ({ page }) => {
+  await page.route('**/auth/v1/signup*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...userRecord(), identities: [] }),
+    });
+  });
+  await stubGoTrueUser(page);
+
+  await page.goto('/app/login?mode=signup');
+  await page.getByLabel('Email or User ID').fill('typo@xbar.test');
+  await page.getByLabel('Password', { exact: true }).fill('a-brand-new-password');
+  await page.getByRole('button', { name: 'Create Account' }).click();
+  await expect(page.getByRole('heading', { name: 'Check typo@xbar.test' })).toBeVisible({ timeout: 30_000 });
+
+  /*
+   * A mistyped address is the likeliest reason the email never arrives, and
+   * from a screen with no form there is otherwise nothing to do about it but
+   * start over. This has to actually return to signup rather than merely
+   * exist.
+   */
+  await page.getByRole('button', { name: 'Use a different address' }).click();
+
+  await expect(page.getByRole('button', { name: 'Create Account' })).toBeVisible();
+  // Still on signup, and the address is there to be corrected rather than
+  // retyped from scratch.
+  await expect(page.getByLabel('Email or User ID')).toHaveValue('typo@xbar.test');
+
+  /*
+   * The password does NOT come back with it. It was accepted and the screen
+   * moved on to an inbox, so leaving it in the field means the credential sits
+   * in an unsubmitted form for as long as the tab is open.
+   */
+  await expect(page.getByLabel('Password', { exact: true })).toHaveValue('');
+
+  // Which also means it cannot be resubmitted without retyping it -- the
+  // button stays disabled on the cleared password, not merely blank-looking.
+  await expect(page.getByRole('button', { name: 'Create Account' })).toBeDisabled();
+
+  // And the other way out still works.
+  await page.getByLabel('Password', { exact: true }).fill('a-brand-new-password');
+  await page.getByRole('button', { name: 'Create Account' }).click();
+  await expect(page.getByRole('heading', { name: 'Check typo@xbar.test' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to sign in' }).click();
+  await expect(page.getByRole('button', { name: 'Sign In', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Check / })).toHaveCount(0);
+});
