@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { XbarMark } from '@/components/BrandMark';
 import { isSupabaseConfigured } from '@/lib/platformConfig';
 import { hasValidatedPasswordRecovery, useCloudStore } from '@/store/useCloudStore';
+import { resetScreenState } from '@/lib/passwordRecovery';
 import { useUiStore } from '@/store/useUiStore';
 import './cleanEntryExperience.css';
 
@@ -57,7 +58,18 @@ export default function ResetPassword() {
    * current password -- not this screen quietly accepting a live session as
    * proof of an emailed link.
    */
-  const canSubmit = supabaseReady && recoveryPending;
+  /*
+   * One question, one answer. Independent booleans here previously let the
+   * success and refusal branches render together: completing a reset clears
+   * the grant, which is exactly what "no valid recovery" was testing for.
+   */
+  const screen = resetScreenState({
+    supabaseReady,
+    done,
+    submitting: busy,
+    settling,
+    recoveryValid: recoveryPending,
+  });
 
   useEffect(() => {
     if (!done) return;
@@ -108,20 +120,20 @@ export default function ResetPassword() {
             <span>Choose a new password for your workspace. Until you do, the old one still applies.</span>
           </div>
 
-          {!supabaseReady && (
+          {screen === 'unavailable' && (
             <p className="clean-auth-message clean-auth-message--error" role="alert">
               Cloud accounts are not configured in this build, so there is no password to change.
             </p>
           )}
 
-          {supabaseReady && !canSubmit && !settling && (
+          {screen === 'refused' && (
             <p className="clean-auth-message clean-auth-message--error" role="alert">
               This page needs a current password-reset link. Recovery links expire, and each new one cancels the last,
               so request another from the sign-in screen.
             </p>
           )}
 
-          {canSubmit && !done && (
+          {(screen === 'form' || screen === 'saving') && (
             <form className="clean-form" onSubmit={submit} aria-busy={busy}>
               <div className="clean-field">
                 <label htmlFor={passwordId}>New password</label>
@@ -178,9 +190,9 @@ export default function ResetPassword() {
             </p>
           )}
 
-          {done && <p className="clean-auth-hint">Taking you to your workspace...</p>}
+          {screen === 'done' && <p className="clean-auth-hint">Taking you to your workspace...</p>}
 
-          {!canSubmit && !settling && (
+          {screen === 'refused' && (
             <div className="clean-auth-footer">
               <button type="button" onClick={() => navigate('/login', { replace: true })}>
                 Back to sign in

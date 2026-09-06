@@ -231,13 +231,22 @@ test('a session alone does not unlock the password form', () => {
   const screen = read('src/routes/ResetPassword.tsx');
   assert.match(
     screen,
-    /const canSubmit = supabaseReady && recoveryPending;/,
-    'the form must require an established recovery, not merely a session',
-  );
-  assert.match(
-    screen,
     /hasValidatedPasswordRecovery/,
     'the gate must compare the grant against the current session, not read a bare flag',
+  );
+  assert.match(screen, /recoveryValid: recoveryPending/, 'the validated recovery must feed the screen state');
+
+  /*
+   * The screen must render from ONE state. Independent booleans let the success
+   * and refusal branches render together -- completing a reset clears the grant,
+   * so "done" and "no valid recovery" became true at the same instant and the
+   * customer was told the reset both worked and had not.
+   */
+  assert.match(screen, /const screen = resetScreenState\(/, 'the screen must derive a single state');
+  assert.equal(
+    /canSubmit/.test(screen),
+    false,
+    'canSubmit is back: the branches are independent booleans again, which is how they overlapped',
   );
 });
 
