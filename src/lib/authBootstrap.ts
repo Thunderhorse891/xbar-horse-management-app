@@ -33,3 +33,28 @@ export function bootstrapEventDisposition(input: BootstrapEventInput): Bootstrap
   if (input.bootstrapped) return 'apply';
   return input.event === 'INITIAL_SESSION' ? 'ignore' : 'queue';
 }
+
+/**
+ * Lets only the most recently started write commit.
+ *
+ * Syncing a session is not atomic: a signed-in one waits on a workspace
+ * network round trip before it writes, while a signed-out one writes at once.
+ * The auth listener starts these without awaiting them, so two can be in
+ * flight together and the LAST TO FINISH wins rather than the last to happen.
+ * A sign-out therefore lands, and the sign-in it replaced finishes afterwards
+ * and puts the old session and workspace back -- with no further event coming,
+ * so the app shows a workspace the customer has left until they reload.
+ *
+ * Ordering by arrival instead of by latency is the whole job. Each write takes
+ * a ticket on the way in and checks it on the way out; a write that has been
+ * overtaken drops itself instead of committing stale state.
+ */
+export function createLatestWriteGate() {
+  let issued = 0;
+  return function begin() {
+    const ticket = ++issued;
+    return function isStillLatest() {
+      return ticket === issued;
+    };
+  };
+}

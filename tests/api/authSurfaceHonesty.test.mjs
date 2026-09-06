@@ -331,6 +331,22 @@ test('an auth event during bootstrap is kept rather than dropped', () => {
   assert.match(initialize, /takeQueuedEvent\(\)/, 'and replayed once the first sync has finished');
 });
 
+test('a stale session sync cannot commit over a newer one', () => {
+  /*
+   * syncSessionState is started without being awaited and the two shapes do
+   * not take the same time: signed-out writes at once, signed-in first loads a
+   * workspace over the network. Without a gate the winner is whichever
+   * FINISHES last, so a sign-out was undone by the sign-in it replaced.
+   */
+  const initialize = body(store, /initialize: async[\s\S]*?\n {2}\},/, 'initialize');
+  assert.match(initialize, /createLatestWriteGate\(\)/, 'session syncs must be ordered by arrival, not by latency');
+  assert.match(
+    initialize,
+    /const accessProfile = await loadWorkspaceAccessProfile\(session\);\s*if \(!isStillLatest\(\)\)/,
+    'the check has to sit between the awaited load and the write, or it guards nothing',
+  );
+});
+
 test('a recovery grant is released when its session ends', () => {
   /*
    * The explicit signOut action only clears the tab that ran it. A token

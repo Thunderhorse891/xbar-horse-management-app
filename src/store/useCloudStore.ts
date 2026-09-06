@@ -6,7 +6,7 @@ import { isSupabaseConfigured } from '@/lib/platformConfig';
 import type { UserRole } from '@/types/xbar';
 import { authCallbackOrigin, isNativeApp } from '../lib/nativePlatform.js';
 import { describeAuthError } from '@/lib/authErrors';
-import { bootstrapEventDisposition } from '@/lib/authBootstrap';
+import { bootstrapEventDisposition, createLatestWriteGate } from '@/lib/authBootstrap';
 import { hasValidatedPasswordRecovery } from '@/lib/passwordRecovery';
 
 export { hasValidatedPasswordRecovery };
@@ -213,7 +213,18 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
       return;
     }
 
+    /*
+     * Only the most recent sync may write. These are started without being
+     * awaited and they do not take the same time -- a signed-out sync writes
+     * at once, a signed-in one first loads a workspace over the network -- so
+     * without this the winner is whichever FINISHES last, and a sign-out gets
+     * quietly undone by the sign-in it replaced. See lib/authBootstrap.ts.
+     */
+    const beginSync = createLatestWriteGate();
+
     const syncSessionState = async (session: Session | null, initialized = false) => {
+      const isStillLatest = beginSync();
+
       if (!session) {
         set({
           ...(initialized ? { initialized: true } : {}),
@@ -226,6 +237,17 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
       }
 
       const accessProfile = await loadWorkspaceAccessProfile(session);
+      if (!isStillLatest()) {
+        /*
+         * Overtaken while the profile was loading. The newer sync owns the
+         * session state now -- but `initialized` is a one-time latch that
+         * releases the app from its loading screen, so it is still set here or
+         * a superseded first sync would leave the app waiting forever.
+         */
+        if (initialized) set({ initialized: true });
+        return;
+      }
+
       set({
         ...(initialized ? { initialized: true } : {}),
         status: 'signed-in',

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { bootstrapEventDisposition } from '../src/lib/authBootstrap.js';
+import { bootstrapEventDisposition, createLatestWriteGate } from '../src/lib/authBootstrap.js';
 import { isRecoveryCallbackUrl } from '../src/lib/authCallbackArrival.js';
 
 /*
@@ -58,4 +58,52 @@ test('an ordinary URL is not a recovery callback', () => {
   // Not a bare substring match: `type=recovery` has to be its own parameter.
   assert.equal(isRecoveryCallbackUrl('https://x.test/app/?prototype=recovery-plan'), false);
   assert.equal(isRecoveryCallbackUrl('https://x.test/app/?type=recovery-lite'), false);
+});
+
+test('a single write commits', () => {
+  const begin = createLatestWriteGate();
+  const isStillLatest = begin();
+  assert.equal(isStillLatest(), true);
+});
+
+test('a write that has been overtaken must not commit', () => {
+  /*
+   * The defect: syncing a signed-in session waits on a workspace round trip
+   * before it writes, while a signed-out one writes at once, and the auth
+   * listener starts them without awaiting. So a sign-out landed and the
+   * sign-in it replaced finished afterwards and put the old session and
+   * workspace back -- with no further event coming to correct it.
+   */
+  const begin = createLatestWriteGate();
+  const older = begin();
+  const newer = begin();
+  assert.equal(older(), false, 'the overtaken write must drop itself');
+  assert.equal(newer(), true, 'the newest write owns the state');
+});
+
+test('only the newest of several writes survives', () => {
+  const begin = createLatestWriteGate();
+  const first = begin();
+  const second = begin();
+  const third = begin();
+  assert.deepEqual([first(), second(), third()], [false, false, true]);
+});
+
+test('the newest write stays valid however long it takes', () => {
+  // It is not a timeout: a slow write still commits, as long as nothing newer
+  // has started. Expiring on duration would drop legitimate slow syncs.
+  const begin = createLatestWriteGate();
+  const only = begin();
+  assert.equal(only(), true);
+  assert.equal(only(), true);
+});
+
+test('gates are independent of one another', () => {
+  // One gate per store initialization, so a second one must not retire the
+  // first one's in-flight write.
+  const beginA = createLatestWriteGate();
+  const beginB = createLatestWriteGate();
+  const a = beginA();
+  beginB();
+  assert.equal(a(), true);
 });
