@@ -222,6 +222,23 @@ export default function Login() {
     report(result.ok ? 'Check your inbox' : 'Reset unavailable', result);
     setBusy('');
   };
+  /*
+   * Lifted out of the form so it survives the form being replaced.
+   *
+   * Every auth outcome has to land on the screen and not only in a toast, and
+   * the confirmation state has outcomes of its own -- a resend succeeding or
+   * failing. Leaving this inside the form would have meant those reported only
+   * as a toast, quietly reintroducing the thing `report` exists to prevent.
+   */
+  const messagePanel = formMessage && (
+    <p
+      className={`clean-auth-message clean-auth-message--${formMessage.tone}`}
+      role={formMessage.tone === 'error' ? 'alert' : 'status'}
+    >
+      {formMessage.text}
+    </p>
+  );
+
   const label = authMode === 'signin' ? 'System access' : selectedPlan ? `${selectedPlan} tier` : 'New workspace';
   const title = authMode === 'signin' ? 'Sign In' : 'Create Account';
   const description = selectedPlan
@@ -295,7 +312,18 @@ export default function Login() {
             <span>{description}</span>
           </div>
 
-          {confirmationEmail && (
+          {/*
+            One screen, one state. Leaving the signup form standing under this
+            callout meant the screen told the customer to go and open an email
+            while still offering the button that produced it -- with their
+            address and password still filled in. Pressing it again is the
+            obvious thing to do when the email has not arrived yet, and it
+            spends Supabase's signup email allowance on duplicates, which for a
+            project already struggling to deliver the first one makes the actual
+            problem worse. The resend control below is the same intent, done
+            once and rate-limited by Supabase as a resend rather than a signup.
+          */}
+          {confirmationEmail ? (
             <div className="clean-auth-callout" role="status">
               <h2>Check {confirmationEmail}</h2>
               <p>
@@ -311,128 +339,122 @@ export default function Login() {
                   Back to sign in
                 </button>
               </div>
+              {messagePanel}
             </div>
-          )}
-
-          <form className="clean-form" onSubmit={submit} aria-busy={busy !== ''}>
-            <div className="clean-field">
-              <label htmlFor={emailId}>Email or User ID</label>
-              <input
-                id={emailId}
-                type="email"
-                value={email}
-                onChange={(event) => {
-                  setEmail(event.target.value);
-                  if (formMessage?.tone === 'error') setFormMessage(null);
-                }}
-                autoComplete="email"
-                required
-              />
-            </div>
-            <div className="clean-field">
-              <label htmlFor={passwordId}>Password</label>
-              <div className="clean-password-field">
+          ) : (
+            <form className="clean-form" onSubmit={submit} aria-busy={busy !== ''}>
+              <div className="clean-field">
+                <label htmlFor={emailId}>Email or User ID</label>
                 <input
-                  id={passwordId}
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
+                  id={emailId}
+                  type="email"
+                  value={email}
                   onChange={(event) => {
-                    setPassword(event.target.value);
+                    setEmail(event.target.value);
                     if (formMessage?.tone === 'error') setFormMessage(null);
                   }}
-                  autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'}
-                  minLength={8}
+                  autoComplete="email"
                   required
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((value) => !value)}
-                  aria-label={showPassword ? 'Hide entered value' : 'Show entered value'}
-                >
-                  {showPassword ? 'Hide' : 'Show'}
-                </button>
               </div>
-            </div>
-            <div className="clean-auth-options">
-              <label>
-                <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />{' '}
-                Remember me
-              </label>
-              {authMode === 'signin' && supabaseReady && (
-                <button type="button" disabled={!email || busy !== ''} onClick={reset}>
-                  {busy === 'reset' ? 'Sending...' : 'Forgot password?'}
-                </button>
-              )}
-            </div>
-            <button
-              className="clean-primary-button"
-              type="submit"
-              disabled={!email || password.length < 8 || busy !== ''}
-            >
-              {busy === 'password' ? 'Authenticating...' : authMode === 'signin' ? 'Sign In' : 'Create Account'}
-            </button>
-            {formMessage && (
-              <p
-                className={`clean-auth-message clean-auth-message--${formMessage.tone}`}
-                role={formMessage.tone === 'error' ? 'alert' : 'status'}
-              >
-                {formMessage.text}
-              </p>
-            )}
-            {supabaseReady && !canPresentThirdPartySignIn() && authMode === 'signin' && (
-              <>
-                <div className="clean-divider">
-                  <span>or</span>
+              <div className="clean-field">
+                <label htmlFor={passwordId}>Password</label>
+                <div className="clean-password-field">
+                  <input
+                    id={passwordId}
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(event) => {
+                      setPassword(event.target.value);
+                      if (formMessage?.tone === 'error') setFormMessage(null);
+                    }}
+                    autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'}
+                    minLength={8}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((value) => !value)}
+                    aria-label={showPassword ? 'Hide entered value' : 'Show entered value'}
+                  >
+                    {showPassword ? 'Hide' : 'Show'}
+                  </button>
                 </div>
-                <button type="button" disabled={busy !== '' || !email.trim()} onClick={() => void requestEmailCode()}>
-                  {busy === 'code' ? 'Sending...' : codeSent ? 'Send another code' : 'Email me a sign-in code'}
-                </button>
-                {codeSent && (
-                  <>
-                    <input
-                      className="field-input"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      placeholder="6-digit code"
-                      value={emailCode}
-                      onChange={(event) => setEmailCode(event.target.value)}
-                    />
-                    <button
-                      type="button"
-                      disabled={busy !== '' || !emailCode.trim()}
-                      onClick={() => void submitEmailCode()}
-                    >
-                      {busy === 'verify' ? 'Checking...' : 'Sign in with code'}
-                    </button>
-                  </>
+              </div>
+              <div className="clean-auth-options">
+                <label>
+                  <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />{' '}
+                  Remember me
+                </label>
+                {authMode === 'signin' && supabaseReady && (
+                  <button type="button" disabled={!email || busy !== ''} onClick={reset}>
+                    {busy === 'reset' ? 'Sending...' : 'Forgot password?'}
+                  </button>
                 )}
-                {/*
+              </div>
+              <button
+                className="clean-primary-button"
+                type="submit"
+                disabled={!email || password.length < 8 || busy !== ''}
+              >
+                {busy === 'password' ? 'Authenticating...' : authMode === 'signin' ? 'Sign In' : 'Create Account'}
+              </button>
+              {messagePanel}
+              {supabaseReady && !canPresentThirdPartySignIn() && authMode === 'signin' && (
+                <>
+                  <div className="clean-divider">
+                    <span>or</span>
+                  </div>
+                  <button type="button" disabled={busy !== '' || !email.trim()} onClick={() => void requestEmailCode()}>
+                    {busy === 'code' ? 'Sending...' : codeSent ? 'Send another code' : 'Email me a sign-in code'}
+                  </button>
+                  {codeSent && (
+                    <>
+                      <input
+                        className="field-input"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        placeholder="6-digit code"
+                        value={emailCode}
+                        onChange={(event) => setEmailCode(event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        disabled={busy !== '' || !emailCode.trim()}
+                        onClick={() => void submitEmailCode()}
+                      >
+                        {busy === 'verify' ? 'Checking...' : 'Sign in with code'}
+                      </button>
+                    </>
+                  )}
+                  {/*
                   Reachable is not the same as findable. Someone who signed up
                   with Google arrives here, finds their button gone, and has no
                   reason to think an emailed code is the route in — so the
                   control has to say who it is for, or the app reads as broken.
                 */}
-                <p className="clean-auth-hint">
-                  If you first signed up with Google, Apple or Facebook, use this — those buttons cannot complete
-                  sign-in inside the app.
-                </p>
-              </>
-            )}
-            {supabaseReady && oauthProviders.length > 0 && (
-              <>
-                <div className="clean-divider">
-                  <span>or continue with</span>
-                </div>
-                <div className="clean-social-grid">
-                  {oauthProviders.map((provider) => (
-                    <button key={provider} type="button" disabled={busy !== ''} onClick={() => oauth(provider)}>
-                      {provider[0].toUpperCase() + provider.slice(1)}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </form>
+                  <p className="clean-auth-hint">
+                    If you first signed up with Google, Apple or Facebook, use this — those buttons cannot complete
+                    sign-in inside the app.
+                  </p>
+                </>
+              )}
+              {supabaseReady && oauthProviders.length > 0 && (
+                <>
+                  <div className="clean-divider">
+                    <span>or continue with</span>
+                  </div>
+                  <div className="clean-social-grid">
+                    {oauthProviders.map((provider) => (
+                      <button key={provider} type="button" disabled={busy !== ''} onClick={() => oauth(provider)}>
+                        {provider[0].toUpperCase() + provider.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </form>
+          )}
 
           <div className="clean-auth-footer">
             {supabaseReady ? (
