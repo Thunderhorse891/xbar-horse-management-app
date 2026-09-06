@@ -6,6 +6,7 @@ import { isSupabaseConfigured } from '@/lib/platformConfig';
 import type { UserRole } from '@/types/xbar';
 import { authCallbackOrigin, isNativeApp } from '../lib/nativePlatform.js';
 import { describeAuthError } from '@/lib/authErrors';
+import { bootstrapEventDisposition } from '@/lib/authBootstrap';
 import { hasValidatedPasswordRecovery } from '@/lib/passwordRecovery';
 
 export { hasValidatedPasswordRecovery };
@@ -245,6 +246,19 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
      * exists to prevent.
      */
     let bootstrapped = false;
+    /*
+     * An event that arrived before the first sync finished, kept rather than
+     * dropped. `null` means none; a queued entry may itself carry a null
+     * session, which is the sign-out case that made this necessary.
+     */
+    let queuedDuringBootstrap: { session: Session | null } | null = null;
+    // Read through a function: control-flow analysis only sees the initializer
+    // at the call site below and would otherwise narrow this to `null`.
+    const takeQueuedEvent = () => {
+      const queued = queuedDuringBootstrap;
+      queuedDuringBootstrap = null;
+      return queued;
+    };
     const { data: subscription } = client.auth.onAuthStateChange((event, session) => {
       // The event was previously discarded entirely, which is why a recovery
       // link used to look like a sign-in.
@@ -272,9 +286,19 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
         set({ passwordRecoveryFor: '' });
         storeRecoveryUser('');
       }
-      // The explicit getSession() below owns the first sync; skipping until it
-      // has run avoids loading the workspace twice on every startup.
-      if (!bootstrapped) return;
+      /*
+       * The explicit getSession() below owns the first sync, so an event that
+       * merely restates it is skipped -- but one that CONTRADICTS it is kept
+       * and replayed, or the in-flight bootstrap silently overwrites it with a
+       * session that has already ended. See lib/authBootstrap.ts.
+       */
+      const disposition = bootstrapEventDisposition({ bootstrapped, event });
+      if (disposition === 'ignore') return;
+      if (disposition === 'queue') {
+        // Last one wins: it is the most recent thing Supabase has said.
+        queuedDuringBootstrap = { session };
+        return;
+      }
       void syncSessionState(session);
     });
 
@@ -302,6 +326,13 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
       await syncSessionState(data.session, true);
     }
     bootstrapped = true;
+
+    // Anything that happened while the above was in flight is newer than the
+    // above, so it lands last.
+    const queued = takeQueuedEvent();
+    if (queued) {
+      await syncSessionState(queued.session);
+    }
 
     return () => subscription.subscription.unsubscribe();
   },

@@ -30,6 +30,7 @@ const read = (file) => stripComments(readFileSync(path.join(process.cwd(), file)
 
 const login = read('src/routes/Login.tsx');
 const store = read('src/store/useCloudStore.ts');
+const app = read('src/App.tsx');
 
 function body(source, signature, label) {
   const match = source.match(signature);
@@ -283,6 +284,51 @@ test('recovery is never inferred from the URL, which the visitor controls', () =
     'the recovery flag must not be derived from the URL; it is attacker-supplied',
   );
   assert.match(code, /event === 'PASSWORD_RECOVERY'/, 'only the validated Supabase event may set it');
+});
+
+test('the tab-arrival signal cannot become an authorization signal', () => {
+  /*
+   * Only the tab that opened the recovery link navigates to the reset screen --
+   * auth-js broadcasts PASSWORD_RECOVERY to every tab, and without this every
+   * open tab yanked itself there, unmounting whatever was in progress.
+   *
+   * That check reads the URL, which is exactly what this flow was burned by
+   * once: a previous revision derived the GRANT from `type=recovery` and any
+   * signed-in customer could forge it. The separation is the whole safety
+   * argument, so it is pinned rather than trusted -- the store, which owns the
+   * grant, must not be able to see this module at all.
+   */
+  // The CONDITION, not merely the symbol: asserting the call appears anywhere
+  // in the file passes with it computed and then ignored, which is how this
+  // guard first read while the redirect still fired in every tab.
+  assert.match(
+    app,
+    /if \(pending && openedTheLink && location\.pathname !== passwordResetPath\)/,
+    'the redirect must be limited to the tab that opened the link',
+  );
+  assert.equal(
+    /authCallbackArrival/.test(store),
+    false,
+    'the store owns the recovery grant and must never see the URL-derived arrival signal',
+  );
+});
+
+test('an auth event during bootstrap is kept rather than dropped', () => {
+  /*
+   * The subscriber runs before getSession() resolves, and every event arriving
+   * in that window used to be discarded. A sign-out in another tab was then
+   * overwritten by the in-flight bootstrap result, leaving the app showing a
+   * workspace the customer had signed out of.
+   */
+  const initialize = body(store, /initialize: async[\s\S]*?\n {2}\},/, 'initialize');
+  assert.match(initialize, /bootstrapEventDisposition/, 'the drop-everything guard must not return');
+  assert.equal(
+    /if \(!bootstrapped\) return;/.test(initialize),
+    false,
+    'dropping every pre-bootstrap event is the defect this replaced',
+  );
+  assert.match(initialize, /queuedDuringBootstrap/, 'a contradicting event has to be kept');
+  assert.match(initialize, /takeQueuedEvent\(\)/, 'and replayed once the first sync has finished');
 });
 
 test('a recovery grant is released when its session ends', () => {

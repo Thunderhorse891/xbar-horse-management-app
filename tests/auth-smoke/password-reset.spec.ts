@@ -399,3 +399,45 @@ test('a submission cut short by another tab is told so, not left on Saving', asy
     releaseFirst();
   }
 });
+
+test('a recovery link does not drag every other tab to the reset screen', async ({ context }) => {
+  /*
+   * auth-js broadcasts PASSWORD_RECOVERY to every open tab, so every tab
+   * records the grant -- which is correct, and is how a spent grant gets
+   * released everywhere. It is not a reason for every tab to NAVIGATE. Opening
+   * a recovery link in a new tab used to yank the others to the reset screen,
+   * unmounting whatever was in progress there.
+   *
+   * The tab that opened the link is identified from its own URL, which is safe
+   * only because it decides routing alone: the grant still comes from
+   * Supabase's validated event, so a forged fragment moves someone to a screen
+   * that then refuses them.
+   */
+  const bystander = await context.newPage();
+  const opener = await context.newPage();
+  await stubGoTrueUser(bystander);
+  await stubGoTrueUser(opener);
+
+  /*
+   * The bystander sits on /verify rather than /login on purpose. Login has a
+   * redirect of its own -- a session arriving by broadcast signs that tab in
+   * and sends it to the workspace, which is correct and long-standing, and
+   * would have been mistaken here for the defect under test. /verify is public
+   * and has no session-driven navigation, so any movement is this redirect's
+   * doing and nothing else's.
+   */
+  await bystander.goto('/app/verify');
+  await expect(bystander.getByText('Verify a sale packet')).toBeVisible({ timeout: 30_000 });
+
+  await opener.goto(recoveryLink());
+  await expect(newPassword(opener)).toBeVisible({ timeout: 30_000 });
+
+  // The broadcast did reach the bystander -- so this is not passing because
+  // nothing happened.
+  await expect.poll(async () => heldGrant(bystander), { timeout: 15_000 }).toBe(USER_ID);
+
+  // And it stayed where the customer left it.
+  await expect(bystander).toHaveURL(/\/app\/verify$/);
+  await expect(bystander.getByText('Verify a sale packet')).toBeVisible();
+  await expect(newPassword(bystander)).toHaveCount(0);
+});

@@ -22,6 +22,7 @@ import { billingPath } from './lib/billingRoutes';
 import { buyerFollowUpPath } from './lib/buyerRoutes';
 import { appBasePath, passwordResetPath, usesHashRouting } from './lib/routeCanon';
 import { trackRuntimeEvent } from './lib/runtimeEvents';
+import { tabOpenedRecoveryCallback } from '@/lib/authCallbackArrival';
 import { hasValidatedPasswordRecovery, useCloudStore } from './store/useCloudStore';
 import './routes/operationsHierarchy.css';
 import './routes/interactionSystem.css';
@@ -177,11 +178,22 @@ function PasswordRecoveryRedirect() {
   const location = useLocation();
   const navigate = useNavigate();
 
+  /*
+   * Only the tab that opened the link. auth-js broadcasts PASSWORD_RECOVERY to
+   * every open tab -- which is right, and is how a spent grant gets released
+   * everywhere -- but it is not a reason to yank every other tab to this
+   * screen, unmounting whatever the customer had in progress there.
+   *
+   * Routing only. The grant still comes from Supabase's validated event, so a
+   * forged fragment moves someone to a screen that then refuses them.
+   */
+  const openedTheLink = tabOpenedRecoveryCallback();
+
   useEffect(() => {
-    if (pending && location.pathname !== passwordResetPath) {
+    if (pending && openedTheLink && location.pathname !== passwordResetPath) {
       navigate(passwordResetPath, { replace: true });
     }
-  }, [pending, location.pathname, navigate]);
+  }, [pending, openedTheLink, location.pathname, navigate]);
 
   return null;
 }
