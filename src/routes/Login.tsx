@@ -148,11 +148,18 @@ export default function Login() {
     // "Account created" is only true when one was, and only a session proves
     // it: the other successful outcomes are a request for a confirmation that
     // has not happened yet, so the screen switches to waiting on the inbox.
+    /*
+     * Only a session proves an account was created. The other two outcomes are
+     * deliberately indistinguishable to the customer -- Supabase hides which
+     * one happened to prevent enumeration -- so the heading must not assert
+     * that a confirmation is waiting, which is false for an address that
+     * already had an account and is exactly the claim that stranded one.
+     */
     report(
       result.ok
         ? result.outcome === 'signed-in'
           ? 'Account created'
-          : 'Confirm your email'
+          : 'Check your email'
         : 'We could not create that account',
       result,
     );
@@ -290,11 +297,11 @@ export default function Login() {
 
           {confirmationEmail && (
             <div className="clean-auth-callout" role="status">
-              <h2>Confirm {confirmationEmail}</h2>
+              <h2>Check {confirmationEmail}</h2>
               <p>
-                Open the link in that email to activate the account. Signing in will keep failing until you do. If
-                nothing arrives in a few minutes, check spam -- and if that address already had an XBAR account, no
-                email was sent, so sign in instead.
+                If that address is new to XBAR, a confirmation link is on its way and you must open it before you can
+                sign in. If it already has an account, nothing was sent -- sign in instead, or use "Forgot password?".
+                Either way, check spam before asking for another.
               </p>
               <div className="clean-auth-callout__actions">
                 <button type="button" disabled={busy !== ''} onClick={() => void resendConfirmation()}>
