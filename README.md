@@ -110,6 +110,17 @@ Required for browser cloud auth and sync:
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
 
+Optional, and empty by default:
+
+- `VITE_AUTH_OAUTH_PROVIDERS` — comma-separated list of `google`, `facebook`,
+  `apple`. Controls which third-party sign-in buttons the login screen draws.
+  Leave it unset until a provider is enabled in **Supabase → Authentication →
+  Providers** _and_ its OAuth client is registered with the provider itself.
+  Supabase answers a redirect for anything else with HTTP 400 `Unsupported
+provider: provider is not enabled`, which a customer experiences as a button
+  that does nothing. Native store builds never show these buttons, because a
+  web OAuth redirect cannot complete inside the app WebView.
+
 Required for managed Stripe billing and webhook reconciliation:
 
 - `SUPABASE_URL`

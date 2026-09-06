@@ -1,5 +1,15 @@
 import { Suspense, lazy, useEffect } from 'react';
-import { BrowserRouter, HashRouter, Navigate, Outlet, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import {
+  BrowserRouter,
+  HashRouter,
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+} from 'react-router-dom';
 import ErrorBoundary from './components/ErrorBoundary';
 import { RequireCloudAuth } from './components/RequireCloudAuth';
 import { RequireSharedListings } from './components/RequireSubscriptionFeature';
@@ -10,9 +20,10 @@ import { OwnerTestModeBar } from './components/OwnerTestModeBar';
 import { Toaster } from './components/ui/sonner';
 import { billingPath } from './lib/billingRoutes';
 import { buyerFollowUpPath } from './lib/buyerRoutes';
-import { appBasePath } from './lib/routeCanon';
+import { appBasePath, passwordResetPath, usesHashRouting } from './lib/routeCanon';
 import { trackRuntimeEvent } from './lib/runtimeEvents';
-import { useCloudStore } from './store/useCloudStore';
+import { tabOpenedRecoveryCallback } from '@/lib/authCallbackArrival';
+import { hasValidatedPasswordRecovery, useCloudStore } from './store/useCloudStore';
 import './routes/operationsHierarchy.css';
 import './routes/interactionSystem.css';
 import './routes/xbarCommandSystem.css';
@@ -24,6 +35,7 @@ import './styles/xbarSaas.css';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const GettingStarted = lazy(() => import('./routes/GettingStarted'));
+const ResetPassword = lazy(() => import('./routes/ResetPassword'));
 const BuyerDealRoom = lazy(() => import('./routes/BuyerDealRoom'));
 const SalePacketStudio = lazy(() => import('./routes/SalePacketStudio'));
 const Reports = lazy(() => import('./routes/Reports'));
@@ -97,11 +109,6 @@ function LegacyHorseRedirect() {
   return <Navigate to={id ? `/horses/${id}` : '/horses'} replace />;
 }
 
-function useHashRouting() {
-  if (typeof window === 'undefined' || import.meta.env.MODE === 'e2e') return false;
-  return import.meta.env.VITE_ROUTER_MODE === 'hash' || window.location.hostname.endsWith('.github.io');
-}
-
 function routeTitle(path: string) {
   if (path.startsWith('/profiles/')) return 'XBAR | Listings';
   if (path.startsWith('/horses/')) return 'XBAR | Horse';
@@ -156,8 +163,43 @@ function FollowUpsRedirect() {
   return <Navigate to={buyerFollowUpPath(leadId ?? undefined)} replace />;
 }
 
+/*
+ * Carries a password-recovery arrival to the reset screen.
+ *
+ * The recovery link cannot always name that screen itself: on the hash router
+ * the route and Supabase's implicit-flow session would have to share one URL
+ * fragment, so the email only loads the shell. This is also the more robust
+ * place for the decision -- it depends on the auth event rather than on a URL
+ * composed days earlier by a different build, which is exactly what went wrong
+ * twice in getting here.
+ */
+function PasswordRecoveryRedirect() {
+  const pending = useCloudStore(hasValidatedPasswordRecovery);
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  /*
+   * Only the tab that opened the link. auth-js broadcasts PASSWORD_RECOVERY to
+   * every open tab -- which is right, and is how a spent grant gets released
+   * everywhere -- but it is not a reason to yank every other tab to this
+   * screen, unmounting whatever the customer had in progress there.
+   *
+   * Routing only. The grant still comes from Supabase's validated event, so a
+   * forged fragment moves someone to a screen that then refuses them.
+   */
+  const openedTheLink = tabOpenedRecoveryCallback();
+
+  useEffect(() => {
+    if (pending && openedTheLink && location.pathname !== passwordResetPath) {
+      navigate(passwordResetPath, { replace: true });
+    }
+  }, [pending, openedTheLink, location.pathname, navigate]);
+
+  return null;
+}
+
 export default function App() {
-  const hashRouting = useHashRouting();
+  const hashRouting = usesHashRouting();
   const Router = hashRouting ? HashRouter : BrowserRouter;
 
   return (
@@ -167,6 +209,7 @@ export default function App() {
         <InteractionShell />
         <SubscriptionEnforcement />
         <RouteTelemetry />
+        <PasswordRecoveryRedirect />
         {/* Renders nothing unless the viewer is an authorized owner. */}
         <OwnerTestModeBar />
         <Suspense
@@ -182,6 +225,7 @@ export default function App() {
             <Route path="/verify" element={<VerifyPacket />} />
             <Route path="/verify/:packetId" element={<VerifyPacket />} />
             <Route path="/login" element={<Login />} />
+            <Route path={passwordResetPath} element={<ResetPassword />} />
             <Route path="/subscribe" element={<Navigate to={billingPath} replace />} />
             <Route
               path="/setup"

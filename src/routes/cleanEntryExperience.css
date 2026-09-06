@@ -499,7 +499,9 @@
 
 .clean-social-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* Sized to the providers actually enabled. A fixed three-column track left a
+   * lone configured provider as a third-width button beside two empty cells. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
   gap: 9px;
 }
 
@@ -711,4 +713,73 @@
   .clean-social-grid button:hover:not(:disabled) {
     transform: none;
   }
+}
+
+/*
+ * Auth feedback that lives in the form.
+ *
+ * A toast in the corner is easy to miss and gone in seconds, which is how a
+ * rejected password came to look like a dead button. These two sit in the
+ * layout instead, so the answer is wherever the customer was already looking.
+ */
+.clean-auth-message {
+  margin: 0;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--entry-line);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.clean-auth-message--error {
+  border-color: color-mix(in srgb, var(--entry-error) 45%, transparent);
+  background: color-mix(in srgb, var(--entry-error) 9%, var(--entry-panel));
+  color: var(--entry-error);
+}
+
+.clean-auth-message--success {
+  border-color: color-mix(in srgb, var(--entry-success) 40%, transparent);
+  background: color-mix(in srgb, var(--entry-success) 9%, var(--entry-panel));
+  color: var(--entry-success);
+}
+
+.clean-auth-callout {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--entry-blue) 35%, transparent);
+  background: color-mix(in srgb, var(--entry-blue) 7%, var(--entry-panel));
+}
+
+.clean-auth-callout h2 {
+  margin: 0;
+  color: var(--entry-ink);
+  font-family: var(--font-ui);
+  font-size: 17px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.clean-auth-callout p {
+  margin: 0;
+  color: var(--entry-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.clean-auth-callout__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+/* Shipped unstyled alongside the native email-code fallback, so it read as a
+ * stray paragraph rather than as guidance attached to the control above it. */
+.clean-auth-hint {
+  margin: 0;
+  color: var(--entry-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }

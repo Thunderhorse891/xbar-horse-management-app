@@ -4,6 +4,23 @@ import { buildDocumentTrustProfile, buildHorsePacketCompleteness } from '../src/
 import { rankHorseMatches } from '../src/lib/xbarRuntime.js';
 import type { DocumentRecord, HorseRecord, OwnershipRecord } from '../src/types/xbar.js';
 
+/*
+ * Fixture dates that mean "recent" have to be derived from today.
+ *
+ * Document currency is measured against the real clock -- health support is
+ * current for CURRENT_HEALTH_SUPPORT_DAYS (180) and Coggins for
+ * CURRENT_COGGINS_DAYS (365). A hardcoded date therefore ages out on its own:
+ * the health note below was written as 2026-03-08, which stopped being current
+ * on 2026-09-04, and this suite began failing the next morning with nobody
+ * having touched the code. Dates that encode an INTENT ("current", "long
+ * expired") are expressed as that intent instead of as a literal.
+ */
+function daysAgo(days: number) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
 function createHorse(
   overrides: Partial<HorseRecord> &
     Pick<
@@ -174,7 +191,7 @@ const documentsSeed: DocumentRecord[] = [
     horseId: 'horse-wiggy',
     entities: {
       horseName: 'WIGGY N RED',
-      examDate: '2026-03-08',
+      examDate: daysAgo(30),
       veterinarian: 'Dr. Maya Brant',
     },
   }),
@@ -316,7 +333,7 @@ test('buildHorsePacketCompleteness requires current dated Coggins evidence', () 
       horseId: wiggy.id,
       entities: {
         horseName: wiggy.name,
-        examDate: '2024-01-12',
+        examDate: daysAgo(3 * 365),
       },
     }),
   ]);
@@ -330,7 +347,7 @@ test('buildHorsePacketCompleteness requires current dated Coggins evidence', () 
       horseId: wiggy.id,
       entities: {
         horseName: wiggy.name,
-        examDate: '2026-04-12',
+        examDate: daysAgo(60),
       },
     }),
   ]);

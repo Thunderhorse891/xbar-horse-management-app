@@ -53,6 +53,13 @@ jobs:
       - name: Production smoke test (built dist)
         run: npm run test:prod-smoke
 
+      # Drives the password-recovery flow on a rendered, Supabase-configured
+      # web bundle. The prod-smoke suite above cannot cover it: build:local
+      # strips the Supabase credentials to enable local mode, so the reset
+      # screen there only ever reports that cloud accounts are unconfigured.
+      - name: Password recovery smoke test (supabase-configured web bundle)
+        run: npm run test:auth-smoke
+
       # The only check that proves the STORE build behaves differently from the
       # web build. The gates are runtime checks a bundler cannot tree-shake, so
       # the strings survive in the JavaScript either way and grepping the bundle
