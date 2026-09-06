@@ -389,6 +389,25 @@ test('queueing a newer event retires the bootstrap sync in flight', () => {
   );
 });
 
+test('the account about to be changed is confirmed against the live session', () => {
+  /*
+   * The screen's gate compares the grant against the store's `session`, which
+   * is a COPY written after a network round trip, while auth-js saves a new
+   * session the moment one arrives. So a different account signing in in
+   * another tab left a window where the form was still enabled on the old
+   * session and updateUser would have changed the NEW account's password.
+   *
+   * The check has to sit immediately before the call, with nothing awaited in
+   * between, or the window simply moves.
+   */
+  const update = body(store, /updatePassword: async[\s\S]*?\n {2}\},/, 'updatePassword');
+  assert.match(
+    update,
+    /await client\.auth\.getSession\(\)[\s\S]*?hasValidatedPasswordRecovery\(\{[\s\S]*?session: live\.session[\s\S]*?\}\)[\s\S]*?client\.auth\.updateUser/,
+    'the live session must be re-read and matched against the grant immediately before updateUser',
+  );
+});
+
 test('a recovery grant is released when its session ends', () => {
   /*
    * The explicit signOut action only clears the tab that ran it. A token

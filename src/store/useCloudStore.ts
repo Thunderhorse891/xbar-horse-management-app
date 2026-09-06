@@ -643,6 +643,33 @@ export const useCloudStore = create<CloudStore>((set, get) => ({
     }
 
     /*
+     * Whose password is about to change, asked of the authority rather than of
+     * a cached copy.
+     *
+     * The screen's gate compares the grant against the store's `session`, and
+     * that is a COPY: it is written after `loadWorkspaceAccessProfile`, a
+     * network round trip. auth-js saves a new session as soon as one arrives.
+     * So if another tab signs into a DIFFERENT account while this form is
+     * open, there is a window where the store still holds the old session --
+     * the form stays enabled and the gate still says yes -- while updateUser
+     * would act on the newly signed-in account and change ITS password.
+     *
+     * The predicate was never wrong; it was being fed a stale input. Asking
+     * auth-js for the live session immediately before the mutation closes the
+     * window, because there is then nothing between the check and the call.
+     */
+    const { data: live, error: liveError } = await client.auth.getSession();
+    if (liveError || !live.session) {
+      return { ok: false, message: 'Your session has ended. Request a new reset link from the sign-in screen.' };
+    }
+    if (!hasValidatedPasswordRecovery({ session: live.session, passwordRecoveryFor: get().passwordRecoveryFor })) {
+      return {
+        ok: false,
+        message: 'This reset link was issued for a different account than the one signed in here. Request a new link.',
+      };
+    }
+
+    /*
      * updateUser can REJECT, not just return an error, and this function
      * promising to resolve is load-bearing: ResetPassword only clears its busy
      * flag after awaiting it, so a rejection left the screen disabled on
